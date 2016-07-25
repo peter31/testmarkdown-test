@@ -1,405 +1,104 @@
-# Messenger bundle
----
+# Websocket chat configuration
 
-Messenger application based on the websocket server and for the most operations websocket requests used rather than AJAX request.
-The  main goal of the websocket server is to notify the users subscribed to it when appear any messages related to this users.
-Websocket client (in web interface) and server part is based on GosWebSocketBundle.
- 
-## API references
----
-There are two main entry points in REST API that provides all available data to show base messenger layout:
-> 1. [Private account base data](https://stage.payever.de/api/rest/v1/doc#get--api-rest-v1-messenger-private-)
-> 2. [Business account base data](https://stage.payever.de/api/rest/v1/doc#get--api-rest-v1-messenger-business-{slug})
+Chat application is built on:
+ - GosWebsocketBundle - https://github.com/GeniusesOfSymfony/WebSocketBundle It is used to create a websocket brigde between client and server sides.
+ - Api.ai - https://api.ai/ Is used to process requests from client to messenger bot user. 
+ - rabbitMQ - to send bot requests from client to api.ai service and show answer to client. 
 
-Once the WS URL is available a new websocket connection can established to run the messenger application.
-For the third-party application to authorize with websocket server it is required to send the OAuth token header just like
-it is done for the usual REST API request.
-Header example:
+## Chat configuration
 
+### Project configs
+
+It is required to set `payever.base_host` parameter to correct value in the file `app/config/parameters.private.yml`
 ```
-Authorization: Bearer SOME-LONG-TOKEN-STRING
+payever.base_host = www.payever.local
 ```
 
-Websocket server use WAMP subprotocol. Pubsub approach is used for getting new messages notifications. RPC approach used for
-sending messages, marketing groups manipulation and so on.
-
-### Subscription to new messages notifications.
-Is done via subscription call to websocket:
+If the foolowing line does not exist in `app/config/parameters.specific.yml` it is required to add (assuming)
 
 ```
-[
-  5,
-  "messenger/chat/channel/{userId}/"
-]
+payever_messenger.client_ws_url: "ws://%payever.base_host%%gos_web_socket.suffix%"
 ```
 
-Where `{userId}` is a messenger user ID that is abtained in a first REST API call to get base data.
- 
-Response example:
+
+### Supervisor
+
+To run chat application is required a permanent console script - `./symfony gos:websocket:server`. 
+It is convenient to run that daemon script using supervisor. Configuration example:
 
 ```
-(
-  8,
-  "messenger/chat/channel/{userId}/",
-  {
-    debug = 1;
-    msg = " has joined messenger/chat/channel/{userId}/";
-    userId = {userId};
-  }
-)
+#/etc/supervisor/conf.d/websocket.conf
+
+[program:websocket]
+command=/local/project/path/symfony gos:we:se
+directory=/local/project/path/
+autostart=true
+autorestart=true
+startretries=3
+stderr_logfile=/var/log/supervisor/websocket.log
+stdout_logfile=/var/log/supervisor/websocket.log
+user=peton
+#environment=
 ```
 
-In case of unauthorized access connection will be closed. This can happen if the OAuth token has expired
-or if OAuth token related to a user that is not an owner of the specified messenger channel.
-   
-### Get conversation data
-
-This one and further operations implements WAMP RPC calls. This method can be used to get data about conversation and its messages.
- 
-Request example:
+Start websocket supervisor daemon:
  
 ```
- [
-  2,
-  {tempChannelName},
-  "messenger/rpc/getConversation"
-  {
-    id: {conversationsId},
-    userId: {userId}
-    startId: {startId},
-    limit: {limit},
-  }
-]
+sudo supervisorctl start websocket
 ```
- 
-Where:
-`{tempChannelName}` - is some hash to identify the response once it will come back
-`{conversationsId}` - ID of the selecte conversation
-`{userId}` - messenger user ID
-`{startId}` - the earliest message ID that is shown in the chat
-`{limit}` - optional messages limit number to get. By default it is equal to 30
 
-Apllication can use the `{startId}` and `{limit}` parameters to get all the messages history.
-  
-Response example:
+To see websocket server logs it is required to run
+
+```
+sudo supervisorctl tail -f websocket
+```
+
+Duting chat application development it is sometimes required to restart websocket daemon. It can be done by:
  
 ```
-[
-  3,
-  {tempChannelName},
-  {
-    id: {conversationsId},
-    name: {conversationName}
-    type: 'conversation'
-    messages: {
-      [
-        id: {messageId}
-        body: {messageBody}
-        date: {date}
-        own: {ownFlag}
-        senderName: {senderName}
-        avatar: {
-          type: {avatarType},
-          value: {avatarValue}
-        }
-        conversationId: {conversationsId} 
-        conversationName: {conversationName}
-        conversationType: 'conversation'
-      ],
-      ...
+sudo supervisorctl restart websocket
+```
+
+
+### Apache vhost
+
+It is required to add the following line in `<VirtualHost *:80>`:
+
+```
+ProxyPass "/chat/" "ws://127.0.0.1:1337"
+```
+
+It is required to enable Apache `proxy` module:if it is not done yet
+
+```
+sudo a2enmod proxy
+```
+
+### Nginx configuration
+
+Add:
+```
+#websockets chat
+    location /chat {
+        proxy_pass http://localhost:1337;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
-  }
-]
-```
- 
-Where
-`{conversationName}` - name of the conversation to show in the contacts list
- {messageId}` - message unique ID
-`{messageBody}` - HTML-view of the message
-`{date}` - formated date
-`{ownFlag}` - is message own for current user
-`{senderName}` - name of the sender
-`{avatarType}` - can be one of `url` and  `letters`
-`{avatarValue}` - relative path to image in case of `url` type and first letters of the name in `letters` type case
- 
-### Activity feed
-
-Get activity feed messages. Request example:
-
-```
-[
-  2,
-  {tempChannelName},
-  "messenger/rpc/getActivity",
-  {
-    userId: {userId},
-    startId: {startId},
-    limit: {limit}
-  }
 ```
 
-Response example:
+to run websocket server with `wss` you need certificates,
+and nginx/apache configured to run in http/https
 
 ```
-[
-  3,
-  {tempChannelName},
-  {
-    id: null,
-    name: 'Activity',
-    type: 'activity'
-    messages: {
-      ...
-    }
-  }
-]
-```
+server {
+        listen   443 ssl;
+        server_name payever.local;
 
-### Marketing group
+        ssl_certificate /usr/local/etc/nginx/ssl/nginx.crt;
+        ssl_certificate_key /usr/local/etc/nginx/ssl/nginx.key;
+        ssl on;
 
-Get marketing group activity messages. This list includes messages from group participants and group owner's messages
-sent directly to group.
-
-Request example:
-
-```
-[
-  2,
-  {tempChannelName},
-  "messenger/rpc/getMarketingGroup",
-  {
-    userId: {userId},
-    startId: {startId},
-    limit: {limit}
-  }
-```
-
-Response example:
-
-```
-[
-  3,
-  {tempChannelName},
-  {
-    id: null,
-    name: {groupName},
-    type: 'marketing-group'
-    messages: {
-      ...
-    }
-  }
-]
-```
-
-### Send message
-
-Send message to specified conversation by ID. Request example:
-
-```
-[
-  2,
-  {tempChannelName},
-  "messenger/rpc/sendMessage",
-  {
-    userId: {userId},
-    conversationId: {conversationId},
-    body: {body}
-  }
-]
-```
-
-Where `{body}` can include HTML-tags `<br><p><b><i><u><h1><h2><h3><a>`.
-
-Response example:
-
-```
-[
-  3,
-  {tempChannelName},
-  {
-    id: {messageId}
-    body: {messageBody}
-    date: {date}
-    own: {ownFlag}
-    senderName: {senderName}
-    avatar: {
-      type: {avatarType},
-      value: {avatarValue}
-    }
-    conversationId: {conversationsId} 
-    conversationName: {conversationName}
-    conversationType: 'conversation'
-  }
-]
-```
-
-### Conversation settings
-
-Get conversations data to show settings window. Request example:
-
-```
-[
-  2,
-  {tempChannelName},
-  "messenger/rpc/getConversationSettings",
-  {
-    id: {conversationId},
-    userId: {userId},
-  }
-]
-```
-
-Response example:
-```
-[
-  3,
-  {tempChannelName},
-  {
-    id: {conversationId}
-    name: {conversationName}
-    avatar: {
-      type: {avatarType},
-      value: {avatarValue}
-    }
-  }
-]
-```
-
-Where
-`{conversationName}` - is name of the second participant of chat and his avatar in respective key.
-
-
-### Marketing group settings
-
-Get marketing roup data to show settings window. Request example:
-
-```
-[
-  2,
-  {tempChannelName},
-  "messenger/rpc/getMarketingGroupSettings",
-  {
-    id: {marketingGroupId},
-    userId: {userId},
-  }
-]
-```
-
-Response example:
-```
-[
-  3,
-  {tempChannelName},
-  {
-    id: {marketingGroupId}
-    name: {marketingGroupName}
-    members: [
-      {
-        id: {memberId}
-        name: {memberName}
-        avatar: {
-          type: {avatarType},
-          value: {avatarValue}
-        }
-      },
-      ...
-    ]
-  }
-]
-```
-
-Where
-`{memberId}` - is ID of marketing group member unique accross all groups
-`{memberName}` - is name of the group member
-
-### Add marketing group member
-
-Request example:
-
-```
-[
-  2,
-  {tempChannelName},
-  "messenger/rpc/addMarketingGroupMember",
-  {
-    groupId: {marketingGroupId},
-    userId: {userId},
-    memberAlias: {memberAlias}
-  }
-]
-```
-
-Where `{memberAlias}` has one of the following formats: 'user-{privateId}', 'business-{businessId}' and 'contact-{contactId}'
-
-Response example:
-```
-[
-  3,
-  {tempChannelName},
-  {
-    id: {memberId}
-    name: {memberName}
-    avatar: {
-      type: {avatarType},
-      value: {avatarValue}
-    }
-  }
-]
-```
-
-### Remove marketing group member
-
-Request example:
-
-```
-[
-  2,
-  {tempChannelName},
-  "messenger/rpc/removeMarketingGroupMember",
-  {
-    groupId: {marketingGroupId},
-    memberId: {memberId},
-    userId: {userId},
-  }
-]
-```
-
-Where `{memberId}` is ID of marketing group member unique accross all groups
-
-Response example:
-```
-[
-  3,
-  {tempChannelName},
-  {
-    removed: true
-  }
-]
-```
-
-### Delete marketing group
-
-Request example:
-
-```
-[
-  2,
-  {tempChannelName},
-  "messenger/rpc/deleteMarketingGroup",
-  {
-    groupId: {marketingGroupId},
-    userId: {userId},
-  }
-]
-```
-
-Response example:
-```
-[
-  3,
-  {tempChannelName},
-  {
-    deleted: true
-  }
-]
+        rewrite     ^   http://$host$request_uri?;
+}
 ```
